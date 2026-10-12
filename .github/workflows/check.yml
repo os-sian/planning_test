@@ -1,0 +1,23 @@
+name: EPIC 1 checks
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run setup:local
+      - run: npx playwright install --with-deps chromium
+      - run: npm run dev > /tmp/prep-cafe-dev.log 2>&1 &
+      - run: npx playwright test
+      - run: npm run build
+        env:
+          NEXT_BUILD_DIR: .next-build
+      - run: npm audit --omit=dev

@@ -1,0 +1,9 @@
+import {test,expect} from '@playwright/test';
+import fs from 'node:fs';
+const text=fs.readFileSync('.local/로그인정보.txt','utf8'),email=text.match(/이메일: (.+)/)![1],password=text.match(/비밀번호: (.+)/)![1];
+test('저장 연결 실패는 입력 유지, 재시도는 실제로 한 번 저장',async({page})=>{
+ await page.goto('/login');await page.getByLabel('이메일',{exact:true}).fill(email);await page.getByLabel('비밀번호',{exact:true}).fill(password);await page.getByRole('button',{name:'본인 계정으로 로그인'}).click();await expect(page.getByRole('button',{name:'새 판매 기록 등록'})).toBeEnabled();await page.getByLabel('판매 일자',{exact:true}).fill('2026-09-24');await expect(page.getByText('이 조건에 맞는 판매 기록이 없습니다.')).toBeVisible();
+ await page.getByRole('button',{name:'새 판매 기록 등록'}).click();await page.getByLabel('판매 메뉴 선택').selectOption('M02');await page.getByLabel('판매 수량',{exact:true}).fill('20');await page.getByLabel('할인 총액',{exact:true}).fill('1000');await page.getByLabel('결제수수료 총액',{exact:true}).fill('1425');await expect(page.getByTestId('preview-net')).toHaveText('₩ 95,000');
+ await page.route('**/api/sales',async route=>{if(route.request().method()==='POST')await route.abort('failed');else await route.continue();});await page.getByRole('button',{name:'판매 기록 등록 및 재고 반영'}).click();await expect(page.getByRole('dialog').getByRole('alert')).toContainText('입력값');await expect(page.getByLabel('판매 수량',{exact:true})).toHaveValue('20');await page.unroute('**/api/sales');await page.getByRole('button',{name:'판매 기록 등록 및 재고 반영'}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.locator('tbody tr')).toHaveCount(1);await expect(page.locator('tbody')).toContainText('95,000');
+ await page.getByRole('button',{name:'카페라떼 매장 기록 삭제'}).click();await page.getByRole('button',{name:'삭제 확인'}).click();await expect(page.getByText('이 조건에 맞는 판매 기록이 없습니다.')).toBeVisible();
+});

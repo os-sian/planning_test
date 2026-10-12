@@ -1,0 +1,20 @@
+import {beforeAll,it,expect} from 'vitest';
+import {sourceDataset} from '../scripts/read-source';
+import {reports,grade} from '@/domain/reports';
+import {F,sum} from '@/domain/numbers';
+import {period} from '@/server/epic2-service';
+import type {Dataset,Sale} from '@/domain/types';
+let data:Dataset;
+beforeAll(async()=>{data=await sourceDataset();});
+const sale=(menu_id:string,net:string,date='2026-09-18'):Sale=>({sale_id:menu_id,date,menu_id,channel:'매장',quantity:'1',unit_price:net,net_sales:net,discount_amount:0,payment_fee:0,recipe_version:'x',unit_food_cost_snapshot:0,unit_packaging_cost_snapshot:0});
+function fixture(){return {...data,sales:[sale('M01','1'),sale('M02','1'),sale('M03','1')],expenses:[{expense_id:'test',date:'2026-09-18',category:'광고비',amount:2,recognition:'직접 입력'}]};}
+it.each([['0','B'],['10','A'],['20','S'],['-1','C'],['9.999999','B'],['19.99999','A']])('반올림 전 등급 %s', (p,g)=>expect(grade(F.of(p),F.of(100))).toBe(g));
+it('순매출 0은 판정 불가',()=>expect(grade(F.of(-10),F.of(0))).toBe(null));
+it('항목별 잔여 원은 소수 크기와 메뉴 ID 순으로 보존',()=>{const r=reports(fixture(),'2026-09-18','2026-09-18');expect(r.menus.find(m=>m.menu_id==='M01')!.operating).toBe('1');expect(r.menus.find(m=>m.menu_id==='M02')!.operating).toBe('1');expect(r.menus.find(m=>m.menu_id==='M03')!.operating).toBe('0');expect(sum(r.menus.map(m=>m.operating)).text()).toBe('2');});
+it('실자료 월 합계·날짜 합계·메뉴 합계 일치, 계획 제외',()=>{const r=reports(data,'2026-09-01','2026-09-30');expect(sum(r.days.map(d=>d.net)).text()).toBe(r.summary.net);expect(sum(r.days.map(d=>d.profit)).text()).toBe(r.summary.profit);expect(sum(r.menus.map(m=>m.profit)).sub(r.unallocated).text()).toBe(r.summary.profit);expect(r.summary.operating).toBe(sum(data.expenses.filter(e=>e.date.startsWith('2026-09')).map(e=>e.amount)).text());});
+it('비용만 있는 날은 손실·미배분, 판매 없는 메뉴는 등급 없음',()=>{const d={...fixture(),sales:[]};const r=reports(d,'2026-09-18','2026-09-18');expect(r.summary.profit).toBe('-2');expect(r.summary.rate).toBe(null);expect(r.unallocated).toBe('2');expect(r.menus.every(m=>m.grade===null&&m.reason==='판매 없음')).toBe(true);});
+it('매출0 판매의 원가·수수료 손실 보존',()=>{const d=fixture();d.sales=[{...sale('M01','0'),unit_food_cost_snapshot:'0.333333',unit_packaging_cost_snapshot:2,payment_fee:1}];const r=reports(d,'2026-09-18','2026-09-18');expect(r.menus[0].grade).toBe(null);expect(r.summary.profit).toBe('-5.333333');});
+it('소수 원가는 분수로 합산 후 표시',()=>{const d=fixture();d.sales=[{...sale('M01','100'),quantity:3,unit_food_cost_snapshot:'0.333',cost_fractions:{food:{n:'1',d:'3'},pack:{n:'0',d:'1'}}}];expect(reports(d,'2026-09-18','2026-09-18').summary.food).toBe('1');});
+it('검색 전에 배분하므로 검색은 메뉴 부담을 바꾸지 않음',()=>{const r=reports(data,'2026-09-18','2026-09-18');const latte=r.menus.find(m=>m.menu_id==='M02')!;expect(r.menus.filter(m=>m.name.includes('라떼')).find(m=>m.menu_id==='M02')!.operating).toBe(latte.operating);});
+it('휴무 비용·미마감·미집계와 일평균 구분',()=>{const d=fixture();d.calendar=[{date:'2026-09-18',record_complete:false,is_open:true,weather:'',note:''},{date:'2026-09-19',record_complete:true,is_open:false,weather:'',note:''}];d.expenses.push({expense_id:'rest',date:'2026-09-19',category:'임차료',amount:100,recognition:'직접 입력'});const r=reports(d,'2026-09-18','2026-09-20');expect(r.days.map(d=>d.status)).toEqual(['입력 기록 기준','휴무','미집계']);expect(r.complete.operating).toBe('100');expect(r.incomplete.operating).toBe('2');expect(r.averageDaily).toBe(null);});
+it('정확한 월말·잘못된 월 거부',()=>{expect(period(new URLSearchParams({mode:'month',period:'2024-02'}))).toEqual({start:'2024-02-01',end:'2024-02-29'});expect(()=>period(new URLSearchParams({mode:'month',period:'2026-13'}))).toThrow();});

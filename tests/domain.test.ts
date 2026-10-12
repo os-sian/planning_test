@@ -1,0 +1,30 @@
+import {sourceDataset} from '../scripts/read-source';
+import {beforeAll,describe,it,expect} from 'vitest';
+import type {Dataset,SaleInput} from '@/domain/types';
+import {validateDataset} from '@/server/dataset';
+import {parseSale} from '@/schemas/sales';
+import {previewSale} from '@/domain/sales-calculation';
+import {F,money} from '@/domain/numbers';
+import {inventory,validateLedger} from '@/domain/ledger-calculation';
+let data:Dataset;
+const input:SaleInput={date:'2026-09-19',menu_id:'M02',channel:'매장',quantity:'20',unit_price:'4800',discount_amount:'1000',payment_fee:'1425'};
+beforeAll(async()=>{process.env.APP_TODAY_OVERRIDE='2026-10-12';data=await sourceDataset();});
+describe('판매 계산과 입력 경계',()=>{
+ it('샘플 전체 ID·참조·매출·원가·재고 검사',()=>{expect(()=>validateDataset(data)).not.toThrow();expect(data.sales).toHaveLength(6112);});
+ it('라떼 매출 95,000과 원두 400g·우유 4,000ml',()=>{const p=previewSale(data,parseSale(input));expect(p.net_sales).toBe('95000');expect(p.use.map(u=>u.quantity)).toEqual(['400','4000']);});
+ it('포장은 컵 20개 추가, 매장은 포장원가 0',()=>{expect(previewSale(data,input).unit_packaging_cost).toBe('0');expect(previewSale(data,{...input,channel:'포장'}).use.at(-1)?.quantity).toBe('20');});
+ it('판매일의 가격 변경 경계를 적용',()=>{const before=previewSale(data,{...input,date:'2025-07-01'});expect(before.unit_food_cost).toBe('1040');expect(F.of(previewSale(data,input).unit_food_cost).cmp(before.unit_food_cost)).toBeGreaterThan(0);});
+ it('기존 스냅샷은 수량 변경에도 보존',()=>{const s=data.sales.find(s=>s.menu_id==='M02'&&s.channel==='매장')!;const p=previewSale(data,{...input,date:s.date,quantity:'10'},s);expect(p.unit_food_cost).toBe(String(s.unit_food_cost_snapshot));expect(p.use.map(u=>u.quantity)).toEqual(['200','2000']);expect(p.warnings.join('')).toContain('수수료');});
+ it('메뉴·채널 변경은 원가 재계산',()=>{const s=data.sales.find(s=>s.menu_id==='M02'&&s.channel==='매장')!;expect(previewSale(data,{...input,date:s.date,channel:'포장'},s).preserved).toBe(false);});
+ it.each(['','-1','0','1.5','abc'])('잘못된 수량 %s 차단',v=>expect(()=>parseSale({...input,quantity:v})).toThrow());
+ it('빈 수수료와 초과 할인은 차단',()=>{expect(()=>parseSale({...input,payment_fee:''})).toThrow();expect(()=>parseSale({...input,discount_amount:'96001'})).toThrow();});
+ it.each(['2025-06-30','2026-02-30','2026-10-13'])('잘못된 날짜 %s 차단',date=>expect(()=>parseSale({...input,date})).toThrow());
+ it('전액 할인과 수수료 초과는 경고하며 계산',()=>{const p=previewSale(data,parseSale({...input,discount_amount:'96000'}));expect(p.net_sales).toBe('0');expect(p.warnings).toHaveLength(2);});
+ it('없는 가격이나 단위 오류는 임의 원가로 대체하지 않음',()=>{expect(()=>previewSale({...data,price_history:[]},input)).toThrow();expect(()=>previewSale({...data,recipes:data.recipes.map(r=>({...r,unit:'invalid'}))},input)).toThrow();});
+ it('무한 소수 분수를 저장·복원해 정확히 유지',()=>{const a=F.of(1).div(3);expect(F.of(a.json()).mul(3).cmp(1)).toBe(0);expect(F.of('291.2').mul(5).text()).toBe('1456');});
+ it('큰 정수 금액도 화면 표시에서 숫자를 잃지 않음',()=>expect(money('123456789012345678901')).toBe('123,456,789,012,345,678,901'));
+});
+describe('판매 변경이 연결된 재고·합계 검증',()=>{
+ it('실측 수량은 과거 판매 변경 후에도 유지',()=>{const simple:Dataset={...data,sales:[],inventory_events:[{event_id:'count',date:'2025-07-02',material_id:'I02',event_type:'실사조정',quantity:'-100',unit:'ml',reason:'실사',counted_quantity:'900'}]};const p=previewSale(simple,{...input,date:'2025-07-01'});simple.sales.push({...input,date:'2025-07-01',sale_id:'test',recipe_version:p.recipe_version,unit_food_cost_snapshot:p.unit_food_cost,unit_packaging_cost_snapshot:p.unit_packaging_cost,net_sales:p.net_sales});expect(inventory(simple,'2025-07-02').find(m=>m.material_id==='I02')?.quantity).toBe('900');simple.sales[0].quantity='10';expect(inventory(simple,'2025-07-02').find(m=>m.material_id==='I02')?.quantity).toBe('900');});
+ it('일별 항목 배분 잔여원·미배분 비용 합계 검사',()=>expect(()=>validateLedger(data)).not.toThrow());
+});

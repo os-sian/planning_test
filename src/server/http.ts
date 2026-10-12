@@ -1,0 +1,3 @@
+import {AppError} from '@/domain/errors';
+export function response(data:unknown,status=200){return Response.json(data,{status,headers:{'Cache-Control':'private, no-store'}});}
+export function failure(error:unknown){if(error instanceof AppError)return response({error:{code:error.code,message:error.message,fields:error.fields}},error.status);const e=error as {code?:string};if(e.code==='23505')return response({error:{code:'DUPLICATE_SALE',message:'같은 날짜·메뉴·채널의 기록이 이미 있습니다. 기존 기록을 수정해주세요.'}},409);console.error('request_failed',{code:e.code||'INTERNAL_ERROR'});return response({error:{code:'SERVICE_UNAVAILABLE',message:'처리하지 못했습니다. 입력값은 유지됩니다. 연결 상태를 확인하고 다시 시도해주세요.'}},503);}

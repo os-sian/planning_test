@@ -1,0 +1,10 @@
+GRANT INSERT,UPDATE,DELETE ON ledger.inventory_events TO ledger_runtime;
+GRANT UPDATE(meta,settings) ON ledger.stores TO ledger_runtime;
+GRANT INSERT,UPDATE,DELETE ON ledger.suppliers,ledger.materials,ledger.menus,ledger.recipes,ledger.price_history,ledger.calendar,ledger.opening_inventory,ledger.monthly_expense_plan TO ledger_runtime;
+CREATE UNIQUE INDEX IF NOT EXISTS inventory_event_id_idx ON ledger.inventory_events(store_id,(data->>'event_id'));
+CREATE UNIQUE INDEX IF NOT EXISTS inventory_count_idx ON ledger.inventory_events(store_id,(data->>'date'),(data->>'material_id')) WHERE data->>'event_type'='실사조정';
+CREATE TABLE IF NOT EXISTS ledger.restore_previews(store_id text NOT NULL REFERENCES ledger.stores,record_key text NOT NULL,data jsonb NOT NULL,PRIMARY KEY(store_id,record_key));
+ALTER TABLE ledger.restore_previews ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS owner_access ON ledger.restore_previews;
+CREATE POLICY owner_access ON ledger.restore_previews TO ledger_runtime USING (EXISTS(SELECT 1 FROM ledger.stores s WHERE s.store_id=restore_previews.store_id AND s.owner_id=current_setting('app.owner_id',true))) WITH CHECK (EXISTS(SELECT 1 FROM ledger.stores s WHERE s.store_id=restore_previews.store_id AND s.owner_id=current_setting('app.owner_id',true)));
+GRANT SELECT,INSERT,DELETE ON ledger.restore_previews TO ledger_runtime;

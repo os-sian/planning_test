@@ -1,0 +1,45 @@
+import {sourceDataset} from '../scripts/read-source';
+import {beforeAll,afterAll,it,expect} from 'vitest';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {getDb,ownedTransaction} from '@/server/db';
+import {migrate} from '@/server/migrate';
+import {seed} from '@/server/dataset';
+import {mutateSale,salesList} from '@/server/sales-service';
+import {F} from '@/domain/numbers';
+import type {SaleInput} from '@/domain/types';
+let folder:string;
+const owner='database-test-owner';const input:SaleInput={date:'2026-09-20',menu_id:'M02',channel:'매장',quantity:'20',unit_price:'4800',discount_amount:'1000',payment_fee:'1425'};
+beforeAll(async()=>{folder=await mkdtemp(path.join(tmpdir(),'prep-cafe-db-'));process.env.APP_MODE='local';process.env.LOCAL_DB_PATH=path.join(folder,'db');process.env.APP_TODAY_OVERRIDE='2026-10-12';const db=await getDb();await migrate(db);await seed(db,owner,await sourceDataset());});
+afterAll(async()=>{await rm(folder,{recursive:true,force:true});});
+it('실제 DB 저장·재조회·수정·삭제·재시도 검증',async()=>{
+ const params=new URLSearchParams({date:input.date});let l=await salesList(owner,params);expect(l.total).toBe(0);
+ const request={request_id:randomUUID(),generation:l.generation,input};const first=await mutateSale(owner,'create',undefined,request) as {sale:{sale_id:string}};await mutateSale(owner,'create',undefined,request);l=await salesList(owner,params);expect(l.total).toBe(1);expect(l.summary.net).toBe('95000');const s=l.rows[0];
+ await expect(mutateSale(owner,'create',undefined,{...request,request_id:randomUUID()})).rejects.toThrow('이미');
+ await mutateSale(owner,'update',s.sale_id,{request_id:randomUUID(),generation:l.generation,row_version:s.row_version,input:{...input,quantity:'10'}});l=await salesList(owner,params);expect(l.summary.net).toBe('47000');expect(l.rows[0].payment_fee).toBe('1425');
+ await expect(mutateSale(owner,'update',s.sale_id,{request_id:randomUUID(),generation:l.generation,row_version:s.row_version,input})).rejects.toThrow('다른 기기');
+ await mutateSale(owner,'delete',first.sale.sale_id,{request_id:randomUUID(),generation:l.generation,row_version:l.rows[0].row_version});expect((await salesList(owner,params)).total).toBe(0);
+});
+it('초기 자료는 재실행해도 한 번만 반영',async()=>{expect(await seed(await getDb(),owner,await sourceDataset())).toBe(false);expect((await salesList(owner,new URLSearchParams({date:'2026-09-18'}))).total).toBe(16);});
+it('DB RLS는 다른 사용자 조회·변경 차단',async()=>{const result=await ownedTransaction('other-owner',tx=>tx.query('SELECT * FROM ledger.sales'));expect(result.rows).toHaveLength(0);await expect(salesList('other-owner',new URLSearchParams())).rejects.toThrow('계정');});
+it('DB 쓰기 실패는 판매 생성과 변경을 모두 취소',async()=>{const db=await getDb();const before=await db.query<{n:number}>('SELECT count(*)::int n FROM ledger.sales');await expect(ownedTransaction(owner,async tx=>{await tx.query('DELETE FROM ledger.sales WHERE store_id=$1 AND record_key=$2',['prep-cafe','S000001']);throw new Error('실패 유도');})).rejects.toThrow();const after=await db.query<{n:number}>('SELECT count(*)::int n FROM ledger.sales');expect(after.rows[0].n).toBe(before.rows[0].n);});
+
+it('EPIC2 비용 실제 저장·중복확인·기기충돌·재시도·삭제·재고 불변',async()=>{
+ const {expenseList,mutateExpense,reportList}=await import('@/server/epic2-service');const {loadDataset}=await import('@/server/dataset');const {inventory}=await import('@/domain/ledger-calculation');
+ const p=new URLSearchParams({date:'2026-09-20'}),before=await expenseList(owner,p);const inv=await ownedTransaction(owner,async tx=>inventory(await loadDataset(tx),'2026-09-20'));
+ const request={request_id:randomUUID(),generation:before.generation,input:{date:'2026-09-20',category:'광고비',amount:'10000'}};
+ const first=await mutateExpense(owner,'create',undefined,request) as {expense:{expense_id:string}};await mutateExpense(owner,'create',undefined,request);expect(F.of((await expenseList(owner,p)).dayTotal).sub(before.dayTotal).text()).toBe('10000');
+ await expect(mutateExpense(owner,'create',undefined,{...request,request_id:randomUUID()})).rejects.toThrow('별도');
+ const extra=await mutateExpense(owner,'create',undefined,{...request,request_id:randomUUID(),confirm_duplicate:true}) as {expense:{expense_id:string;row_version:number}};await mutateExpense(owner,'delete',extra.expense.expense_id,{request_id:randomUUID(),generation:before.generation,row_version:extra.expense.row_version});
+ const saved=(await expenseList(owner,p)).rows.find(e=>e.expense_id===first.expense.expense_id)!;
+ await mutateExpense(owner,'update',saved.expense_id,{request_id:randomUUID(),generation:before.generation,row_version:saved.row_version,input:{...request.input,amount:'5000'}});
+ await expect(mutateExpense(owner,'update',saved.expense_id,{request_id:randomUUID(),generation:before.generation,row_version:saved.row_version,input:request.input})).rejects.toThrow('다른 기기');
+ await expect(mutateExpense(owner,'delete',saved.expense_id,{request_id:randomUUID(),generation:before.generation,row_version:saved.row_version})).rejects.toThrow('다른 기기');
+ expect(F.of((await expenseList(owner,p)).dayTotal).sub(before.dayTotal).text()).toBe('5000');const r=await reportList(owner,new URLSearchParams({period:'2026-09-20'}));expect(r.summary.operating).toBe((await expenseList(owner,p)).dayTotal);
+ const afterInv=await ownedTransaction(owner,async tx=>inventory(await loadDataset(tx),'2026-09-20'));expect(afterInv).toEqual(inv);
+ const latest=(await expenseList(owner,p)).rows.find(e=>e.expense_id===saved.expense_id)!;await mutateExpense(owner,'delete',saved.expense_id,{request_id:randomUUID(),generation:before.generation,row_version:latest.row_version});expect((await expenseList(owner,p)).dayTotal).toBe(before.dayTotal);
+});
+it('EPIC2 전체 백업은 모든 표·정책·해시·버전 포함, 인증 제외',async()=>{const {backup}=await import('@/server/epic2-service');const b=await backup(owner);expect(b.filename).toMatch(/^프렙카페_전체백업_\d{8}_\d{6}\.json$/);expect(b.document.counts.sales).toBe((await sourceDataset()).sales.length);expect(b.document.data.settings.policy_version).toBe('frd-v1');expect(JSON.stringify(b.document)).not.toMatch(/password|password_hash|prep_session|local_sessions|csrf/);const {sha256,...payload}=b.document;const {createHash}=await import('node:crypto');expect(createHash('sha256').update(JSON.stringify(payload)).digest('hex')).toBe(sha256);});
+it('EPIC2 다른 사용자와 음수·미등록항목·세대 충돌 차단',async()=>{const {expenseList,mutateExpense,backup}=await import('@/server/epic2-service');await expect(expenseList('other-owner',new URLSearchParams())).rejects.toThrow();await expect(backup('other-owner')).rejects.toThrow();for(const input of [{date:'2026-09-20',category:'광고비',amount:'-1'},{date:'2026-09-20',category:'재료구매',amount:'1'}])await expect(mutateExpense(owner,'create',undefined,{request_id:randomUUID(),generation:1,input})).rejects.toThrow('정수');await expect(mutateExpense(owner,'create',undefined,{request_id:randomUUID(),generation:999,input:{date:'2026-09-20',category:'광고비',amount:'0'}})).rejects.toThrow('전체 자료');});
