@@ -24,7 +24,9 @@ export async function getDb():Promise<DB> {
     if(!process.env.DATABASE_URL)throw new AppError('SETUP_REQUIRED','DB 연결을 먼저 설정해주세요.',503);
     const ca=process.env.DATABASE_CA_CERT?.replace(/\\n/g,'\n');
     if(!ca)throw new AppError('SETUP_REQUIRED','DB 서버 인증서를 설정해주세요.',503);
-    const client=postgres(process.env.DATABASE_URL,{max:1,prepare:false,ssl:{rejectUnauthorized:true,ca},connect_timeout:5,idle_timeout:20});
+    // DB 인터페이스는 JSON 매개변수를 이미 직렬화한 문자열로 전달한다.
+    // postgres.js 기본 JSON 직렬화가 다시 따옴표를 붙이지 않도록 처리한다.
+    const client=postgres(process.env.DATABASE_URL,{max:1,prepare:false,ssl:{rejectUnauthorized:true,ca},connect_timeout:5,idle_timeout:20,types:{json:{to:114,from:[114,3802],serialize:(value:unknown)=>typeof value==='string'?value:JSON.stringify(value),parse:(value:string)=>JSON.parse(value)}}});
     const wrap=(c:typeof client):DB=>({query:async <T>(sql:string,params:unknown[]=[])=>({rows:await c.unsafe(sql,params as never[]) as unknown as T[]}),exec:sql=>c.unsafe(sql),transaction:fn=>c.begin(tx=>fn(wrap(tx as unknown as typeof client))) as Promise<Awaited<ReturnType<typeof fn>>>});
     state.prepDb=wrap(client);
   }
