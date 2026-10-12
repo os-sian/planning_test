@@ -10,6 +10,10 @@ playwright-report/
 coverage/
 .DS_Store
 *.tsbuildinfo
+*-recovery-key*.txt
+*.crt
+*.pem
+*.key
 *.log
 HOfficeDN_2022_Home.exe
 매장운영데이터/~$*
