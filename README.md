@@ -26,7 +26,7 @@ npm run dev
 4. DB에서 `ledger_runtime` 역할에 로그인 권한과 별도 비밀번호를 지정합니다. 이 역할에는 표 구조 변경·RLS 우회 권한을 주지 않습니다. Vercel 웹 서버의 `DATABASE_URL`은 이 제한 역할의 transaction pooler 접속 주소를 사용합니다. 준비용 관리자 접속 값은 Vercel 웹 환경에 넣지 않습니다.
 5. `APP_MODE=supabase`와 운영 주소·본인 ID를 설정하고 로그인·DB 권한·판매 저장·로그아웃을 다시 검사합니다. 운영에서 인증이 설정되지 않으면 연결 설정 안내만 보여 주고 기록을 공개하지 않습니다.
 
-현재 GitHub·Supabase·Vercel 외부 계정은 연결하지 않았습니다. 실제 연결은 별도 확인과 검사가 필요하며 로컬 테스트 통과만으로 운영 배포 완료를 표시하지 않습니다.
+코드는 [os-sian/planning_test](https://github.com/os-sian/planning_test)의 main 브랜치에 보관했습니다. 현재 Supabase·Vercel 외부 계정은 연결하지 않았습니다. 실제 연결은 별도 확인과 검사가 필요하며 로컬 테스트 통과만으로 운영 배포 완료를 표시하지 않습니다.
 
 ## 기록과 보안
 
